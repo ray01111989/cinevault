@@ -450,7 +450,7 @@
     <button class="server-btn" onclick="switchServer(2,this)">Server 3</button>
   </div>
   <div id="modal-frame-wrap">
-    <iframe id="modal-frame" allowfullscreen allow="fullscreen; autoplay"></iframe>
+    <iframe id="modal-frame" allowfullscreen allow="fullscreen; autoplay" referrerpolicy="no-referrer"></iframe>
   </div>
 </div>
 
@@ -475,6 +475,29 @@
 </div>
 
 <script>
+// How this page works:
+// 1. init() asks /api/tmdb (a server function that adds the secret TMDB key) for movie and TV lists.
+// 2. renderGrid() and doSearch() draw poster cards. Each card carries a short key (data-key) that maps
+//    to its full TMDB record in ITEM_CACHE, so no JSON is ever written into the page's HTML.
+// 3. One click listener (bottom of this script) opens the detail modal for whichever card was clicked.
+// 4. openPlayer() loads an external embed provider in an iframe; this site hosts no media itself.
+// Anything from TMDB that is shown as HTML (titles, genres, episode names) must go through esc().
+
+// Escape text before inserting it as HTML, so a title such as  "><img onerror=...>  or  Tom & "Jerry"
+// is displayed as plain text and cannot break out of an attribute or add markup.
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+// Maps a card's data-key (like "movie:550") to its TMDB record and media type
+const ITEM_CACHE = new Map();
+function cacheItem(item, type) {
+  const key = type + ':' + item.id;
+  ITEM_CACHE.set(key, { item, type });
+  return key;
+}
+// Counts searches so a slow, older search can never overwrite the results of a newer one
+let searchSeq = 0;
+
 const IMG = 'https://image.tmdb.org/t/p/';
 let currentTab = 'movies';
 let activeServer = 0;
@@ -613,16 +636,16 @@ function renderGrid(id, items, tab) {
     const year = (item.release_date || item.first_air_date || '').substring(0, 4);
     const rating = item.vote_average ? item.vote_average.toFixed(1) : '';
     const poster = item.poster_path
-      ? `<img class="card-poster" src="${IMG}w342${item.poster_path}" alt="${title}" loading="lazy">`
+      ? `<img class="card-poster" src="${IMG}w342${item.poster_path}" alt="${esc(title)}" loading="lazy">`
       : `<div class="no-poster">🎬</div>`;
-    return `<div class="card" onclick='openDetail(${JSON.stringify(item).replace(/'/g,"&#39;")}, "${type}")'>
+    return `<div class="card" data-key="${cacheItem(item, type)}">
       ${poster}
       <div class="card-play-overlay">▶</div>
       <div class="card-body">
-        <div class="card-title">${title}</div>
+        <div class="card-title">${esc(title)}</div>
         <div class="card-meta">
           <span class="rating">${rating ? '⭐ ' + rating : ''}</span>
-          <span>${year}</span>
+          <span>${esc(year)}</span>
         </div>
       </div>
     </div>`;
@@ -631,7 +654,6 @@ function renderGrid(id, items, tab) {
 
 // ---- DETAIL MODAL ----
 async function openDetail(item, type) {
-  if (typeof item === 'string') item = JSON.parse(item);
   type = type || item.media_type || (item.title ? 'movie' : 'tv');
   const endpoint = type === 'movie' ? `movie/${item.id}` : `tv/${item.id}`;
   const details = await tmdb(endpoint, 'append_to_response=external_ids');
@@ -649,10 +671,10 @@ async function openDetail(item, type) {
   document.getElementById('detail-title').textContent = title;
   document.getElementById('detail-tagline').textContent = details.tagline || '';
   document.getElementById('detail-meta').innerHTML = [
-    year && `<span class="tag">${year}</span>`,
+    year && `<span class="tag">${esc(year)}</span>`,
     rating && `<span class="tag">⭐ ${rating}</span>`,
     runtime && `<span class="tag">${runtime}</span>`,
-    genres && `<span class="tag">${genres}</span>`,
+    genres && `<span class="tag">${esc(genres)}</span>`,
     seasons && `<span class="tag">${seasons}</span>`,
   ].filter(Boolean).join('');
   document.getElementById('detail-overview').textContent = details.overview || '';
@@ -670,7 +692,6 @@ document.getElementById('detail-modal').onclick = e => {
 
 // ---- PLAYER ----
 async function openPlayer(item, type) {
-  if (typeof item === 'string') item = JSON.parse(item);
   type = type || item.media_type || (item.title ? 'movie' : 'tv');
   isTV = type === 'tv';
   activeServer = 0;
@@ -722,7 +743,7 @@ async function updateEpisodeOptions(id, season) {
   const count = data?.episodes?.length || 10;
   for (let i = 1; i <= count; i++) {
     const name = data?.episodes?.[i-1]?.name || `Episode ${i}`;
-    ep.innerHTML += `<option value="${i}">Ep ${i}: ${name}</option>`;
+    ep.innerHTML += `<option value="${i}">Ep ${i}: ${esc(name)}</option>`;
   }
   currentEpisode = 1;
 }
@@ -763,13 +784,15 @@ function setupSearch() {
   input.addEventListener('input', () => {
     clearTimeout(searchTimer);
     const q = input.value.trim();
-    if (!q) { hideSearch(); return; }
+    if (!q) { searchSeq++; hideSearch(); return; }
     searchTimer = setTimeout(() => doSearch(q), 400);
   });
 }
 
 async function doSearch(q) {
+  const seq = ++searchSeq; // remember which search this is
   const data = await tmdb('search/multi', `query=${encodeURIComponent(q)}&include_adult=false`);
+  if (seq !== searchSeq) return; // a newer search (or clearing the box) happened while we waited
   const results = (data?.results || []).filter(r => r.poster_path && (r.title || r.name));
 
   document.getElementById('search-section').classList.add('show');
@@ -786,14 +809,14 @@ async function doSearch(q) {
     const title = item.title || item.name || 'Unknown';
     const year = (item.release_date || item.first_air_date || '').substring(0, 4);
     const rating = item.vote_average ? item.vote_average.toFixed(1) : '';
-    return `<div class="card" onclick='openDetail(${JSON.stringify(item).replace(/'/g,"&#39;")}, "${type}")'>
-      <img class="card-poster" src="${IMG}w342${item.poster_path}" alt="${title}" loading="lazy">
+    return `<div class="card" data-key="${cacheItem(item, type)}">
+      <img class="card-poster" src="${IMG}w342${item.poster_path}" alt="${esc(title)}" loading="lazy">
       <div class="card-play-overlay">▶</div>
       <div class="card-body">
-        <div class="card-title">${title}</div>
+        <div class="card-title">${esc(title)}</div>
         <div class="card-meta">
           <span class="rating">${rating ? '⭐ ' + rating : ''}</span>
-          <span>${year}</span>
+          <span>${esc(year)}</span>
           <span style="color:var(--accent);font-size:10px">${type.toUpperCase()}</span>
         </div>
       </div>
@@ -806,6 +829,14 @@ function hideSearch() {
   document.getElementById('main-content').style.display = 'block';
   document.getElementById('hero').style.display = 'flex';
 }
+
+// One listener handles clicks on every poster card (they are created dynamically)
+document.addEventListener('click', e => {
+  const card = e.target.closest('.card[data-key]');
+  if (!card) return;
+  const entry = ITEM_CACHE.get(card.dataset.key);
+  if (entry) openDetail(entry.item, entry.type);
+});
 
 init();
 </script>
