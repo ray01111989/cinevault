@@ -39,15 +39,14 @@ If the page shows "Could not connect to the API", the key is missing or the func
 
 ## How it works
 
-1. The page calls `/api/tmdb?endpoint=...`. The serverless function only forwards a fixed list of TMDB endpoints and query parameters, adds the secret key, and returns the JSON.
-2. Poster cards are built from the TMDB data. Every title, year, genre, and episode name is HTML-escaped before it is shown, and cards look up their data by a short key, so nothing from TMDB is ever written into `onclick` attributes.
-3. Older search requests that finish late are ignored, so results always match the latest text in the search box.
+1. The page asks its own server function (`/api/tmdb?endpoint=...`) for movie and TV data. The function adds the secret TMDB key and returns TMDB's JSON, so the key never reaches the browser.
+2. The page draws poster cards from that data. Clicking a card opens its detail modal, and "Watch now" opens the player modal.
 
 ## Project structure
 
 ```
 index.html   UI and client-side logic
-api/tmdb.js  Serverless proxy for the TMDB API (allow-listed endpoints and parameters)
+api/tmdb.js  Serverless proxy for the TMDB API
 ```
 
 ## Notes
